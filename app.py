@@ -1,73 +1,100 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
+from itertools import combinations
 
-# Simpel GTO Preflop Range Solver
-st.title("♠️♥️ GTO Preflop Solver ♦️♣️")
-st.write("Simpel mobilvenlig version - juster parametre og se GTO-ranges")
+st.set_page_config(layout="wide")
 
-# Brugervalg
-st.sidebar.header("Indstillinger")
-stack_size = st.sidebar.slider("Stackstørrelse (BB)", 10, 200, 100)
-position = st.sidebar.selectbox("Din position", ["SB", "BB", "UTG", "MP", "CO", "BTN"])
-villain_position = st.sidebar.selectbox("Modstanders position", ["SB", "BB", "UTG", "MP", "CO", "BTN"])
-
-# Simpel GTO-range matrix (meget forenklet)
-def get_gto_range(pos, villain_pos, stack):
-    # Basisranges (procent af hænder)
-    ranges = {
-        ("BTN", "SB"): 0.45,
-        ("BTN", "BB"): 0.48,
-        ("CO", "BTN"): 0.32,
-        ("MP", "CO"): 0.25,
-        ("UTG", "MP"): 0.18,
-        ("SB", "BB"): 0.65,
-    }
+# ========== EV-BEREGNINGER ==========
+class GTOSolver:
+    def __init__(self):
+        self.hand_strengths = self._init_hand_strengths()
+        
+    def _init_hand_strengths(self):
+        """Precomputed hand vs hand equities (fra PokerStove-lignende data)"""
+        strengths = {
+            'AA': 0.85, 'KK': 0.82, 'QQ': 0.80, 'JJ': 0.78, 'TT': 0.75,
+            'AKs': 0.67, 'AQs': 0.66, 'AJs': 0.65, 'KQs': 0.63, 
+            'AKo': 0.65, 'AQo': 0.64, 'KQo': 0.60, 'JJ-': 0.55
+        }
+        return strengths
     
-    # Juster baseret på stackstørrelse
-    adjustment = np.clip(stack / 100, 0.5, 1.5)
-    base_range = ranges.get((pos, villain_pos), 0.22) * adjustment
+    def calculate_ev(self, my_range, opp_range, stack=100, bet_size=3):
+        """Simplificeret EV-model"""
+        my_hands = self._expand_range(my_range)
+        opp_hands = self._expand_range(opp_range)
+        
+        total_ev = 0
+        for my_hand in my_hands:
+            equity = self.hand_strengths.get(my_hand, 0.5)
+            ev = (equity * (stack + bet_size)) - ((1 - equity) * bet_size)
+            total_ev += ev
+        
+        return total_ev / len(my_hands) if my_hands else 0
     
-    # Generer tilfældige GTO-ranges (i virkeligheden ville dette være en database)
-    hands = ["AA", "KK", "QQ", "JJ", "TT", "99", "88", "77", "AKs", "AQs", "AJs", "ATs",
-             "AKo", "AQo", "KQs", "QJs", "JTs", "T9s", "98s", "87s", "76s", "65s", "54s"]
+    def _expand_range(self, range_str):
+        """Konverter range notation til individuelle hænder"""
+        if 'JJ+' in range_str:
+            return ['AA', 'KK', 'QQ', 'JJ']
+        elif 'AKs' in range_str:
+            return ['AKs']
+        return []
+
+# ========== STREAMLIT UI ==========
+st.title("📱 Poker GTO Solver")
+solver = GTOSolver()
+
+with st.expander("⚙️ Range Indstillinger", expanded=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        my_range = st.selectbox(
+            "Din Range",
+            ["JJ+", "AKs", "AQo+", "KQs", "Custom"],
+            index=0
+        )
+        
+    with col2:
+        opp_range = st.selectbox(
+            "Modstanders Range",
+            ["JJ+", "TT+", "AKs", "AJo+", "Loose"],
+            index=1
+        )
+
+with st.expander("💰 EV Beregner", expanded=True):
+    stack = st.slider("Stack (BB)", 10, 200, 100)
+    bet_size = st.slider("Bet Size (BB)", 1, 10, 3)
     
-    selected = hands[:int(len(hands) * base_range)]
-    return sorted(selected)
+    if st.button("Beregn EV"):
+        ev = solver.calculate_ev(my_range, opp_range, stack, bet_size)
+        st.metric("Forventet Værdi (EV)", f"{ev:.2f} BB")
+        
+        # EV Visualisering
+        ev_diff = ev - bet_size
+        st.progress(max(0, min(1, (ev + 5) / 10)))
+        st.caption(f"EV difference: {'+' if ev_diff >=0 else ''}{ev_diff:.2f} BB")
 
-# Beregn range
-gto_range = get_gto_range(position, villain_position, stack_size)
+# ========== RANGE MATRIX ==========
+st.subheader("🧮 Range Matrix")
+hands = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2']
+matrix = pd.DataFrame(np.zeros((13,13)), index=hands, columns=hands)
 
-# Vis resultater
-st.subheader(f"GTO Preflop Range for {position} vs {villain_position} ({stack_size}BB)")
-st.write("**Anbefalede hænder:**")
-st.write(", ".join(gto_range))
+# Populér matrix baseret på valgt range
+if 'JJ+' in my_range:
+    matrix.loc['J':'A', 'J':'A'] = 0.8  # Pocket pairs
+    matrix.loc['A', 'K'] = 0.6  # AK
 
-# Visualisering
-st.subheader("Range Matrix")
-hand_matrix = pd.DataFrame(np.zeros((13,13)), 
-                          index=["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"],
-                          columns=["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"])
+st.dataframe(
+    matrix.style.applymap(
+        lambda x: f"background-color: rgba(0,255,0,{x})" if x > 0 
+        else f"background-color: rgba(255,0,0,{abs(x)})"
+    ),
+    height=600
+)
 
-for hand in gto_range:
-    if len(hand) == 3:  # suited
-        row, col = hand[0], hand[1]
-        hand_matrix.loc[row, col] = 1
-    else:  # offsuit
-        row, col = hand[0], hand[1]
-        hand_matrix.loc[row, col] = 0.5
-
-st.dataframe(hand_matrix.style.applymap(lambda x: f"background-color: {'#4CAF50' if x > 0 else '#f44336'}"))
-
-# Forklaring
+# ========== MOBILOPTIMERING ==========
 st.markdown("""
-**Brugsanvisning:**
-1. Vælg din position og modstanders position
-2. Juster stackstørrelse
-3. Se den anbefalede GTO-range
-
-**Symbolforklaring:**
-- 1.0 = Raise/call med suited
-- 0.5 = Raise/call med offsuit
-- 0 = Fold
-""")
+<style>
+    .stDataFrame { font-size: 0.8em; }
+    [data-testid="stMetricValue"] { font-size: 1.5em; }
+</style>
+""", unsafe_allow_html=True)
